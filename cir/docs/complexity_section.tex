@@ -1,0 +1,155 @@
+% =====================================================================
+%  Complexity analysis section  (drop into the paper)
+%  Requires: \usepackage{amsmath,amssymb,booktabs,array}
+%  Uses \Theta via \mathrm; define once if you like:
+%  \newcommand{\Ord}{\mathcal{O}}
+% =====================================================================
+\section{Computational Complexity}
+\label{sec:complexity}
+
+Throughout, $n=N$ is the block (decode) length. For an LDPC code the
+parity-check matrix is sparse with \emph{bounded} row/column degrees, so the
+number of Tanner-graph edges and the number of checks are both linear in $n$:
+\begin{equation}
+|E| \;=\; \bar d_v\,N \;=\; \bar d_c\,M \;=\; \Theta(n),
+\qquad M=(1-R')\,n=\Theta(n),
+\label{eq:sparsity}
+\end{equation}
+where $\bar d_v,\bar d_c$ are the mean variable-/check-node degrees (constants).
+Because every message array is indexed by edges, one decoder half-iteration is
+$\Theta(|E|)=\Theta(n)$, and all per-frame costs below are linear in $n$; the
+node degrees enter only as constant factors. Table~\ref{tab:complexity}
+summarizes the symbols and Table~\ref{tab:algo-complexity} the per-algorithm
+costs.
+
+\begin{table}[t]
+\centering
+\caption{Complexity symbols (values for the $n=1280$, $R=1/2$ code).}
+\label{tab:complexity}
+\small
+\begin{tabular}{@{}cll@{}}
+\toprule
+Symbol & Meaning & Value \\
+\midrule
+$n{=}N$        & block (decode) length            & $1280$ \\
+$M$            & check nodes                      & $640$ \\
+$|E|$          & Tanner-graph edges               & $4288$ \\
+$\bar d_v,\bar d_c$ & mean VN / CN degree         & $3.35,\,6.7$ \\
+$L$            & decoder iterations               & $15$ \\
+$B$            & batch size (parallel frames)     & $320\text{--}12\text{k}$ \\
+$S$            & training steps                   & $120\text{--}300$ \\
+$K$            & trapping sets in the pool        & --- \\
+$\bar a$       & mean TS size ($\le a_{\max}$)     & $\le 10$ \\
+$P$            & ES population (antithetic pairs)  & $8\,/\,12$ \\
+$d_\theta$     & policy dimension $=4L$           & $60$ \\
+$N_t$          & IS trials per SNR point          & $2\text{--}3\times10^{5}$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Base primitive: one min-sum decode}
+Per iteration the batched decoder performs, over the whole batch, a check-node
+update (exclude-one \textsc{min1/min2} reduction over a $[B,M,d_c]$ tensor), an
+edge-indexed variable-node scatter--add, and a syndrome/early-stop test---each
+$\Theta(B|E|)$. Hence one decode of $B$ frames for $L$ iterations costs
+\begin{equation}
+T_{\mathrm{decode}}=\Theta\!\big(B\,L\,|E|\big)=\Theta\!\big(B\,L\,n\big),
+\qquad
+S_{\mathrm{decode}}=\underbrace{\Theta(Bn)}_{\text{messages}}+\underbrace{\Theta(Ln)}_{\text{weights}}.
+\label{eq:decode}
+\end{equation}
+Active-set compaction drops converged frames, so \eqref{eq:decode} is an upper
+bound; the realized cost is $\Theta\!\big(\sum_\ell B_\ell n\big)$ with $B_\ell$
+the still-unconverged count. The \textsc{min1/min2} form avoids the naive
+$\Theta(B\,M\,d_c^{2})$ check update; both are $\Theta(n)$ in $n$, but the
+constant matters in hardware.
+
+\begin{table*}[t]
+\centering
+\caption{Per-algorithm complexity in the block length $n$. $T_{\mathrm{dec}}=BLn$
+is one forward decode; all training methods optimize only the $2|E|L=\Theta(Ln)$
+edge weights on a fixed graph.}
+\label{tab:algo-complexity}
+\small
+\renewcommand{\arraystretch}{1.25}
+\begin{tabular}{@{}lccc@{}}
+\toprule
+Algorithm & Passes / step & Time (total) & Extra memory vs.\ inference \\
+\midrule
+Q-NMS inference (deploy)          & $1$ fwd                & $\Theta(BLn)$                 & --- \; ($\Theta(Bn{+}Ln)$ total) \\
+Structural TS search (offline)    & ---                    & $\Theta(a_{\max}\,n^{2})$     & $\Theta(n)$ per seed \\
+Empirical TS search               & $1$ fwd/batch          & $\Theta(N_t^{\mathrm{s}}\,Ln)$& $\Theta(Bn)$ \\
+IS floor estimator                & $1$ fwd/batch          & $\Theta\!\big(N_t(Ln{+}K\bar a)\big)$ & $\Theta(Kn)$ (matrix $A$) \\
+NNMS / beat / IS-NMS (grad.)      & $1$ fwd $+\,1$ bwd     & $\Theta(SBLn)$               & $\Theta(BLn)$ (autograd tape) \\
+Adv-NMS (FGSM $+$ defense)        & $2$ fwd $+\,2$ bwd     & $\Theta(SBLn)$               & $\Theta(BLn)$ \\
+\textbf{RL-NMS} (ES / score-fn)   & $2P$ fwd, $\mathbf{0}$ bwd & $\Theta(SPBLn)$          & $\boldsymbol{\Theta(Bn{+}Ln)}$ (no tape) \\
+\textbf{SAC-NMS} (max-ent ES)     & $2P$ fwd, $\mathbf{0}$ bwd & $\Theta(SPBLn)$          & $\boldsymbol{\Theta(Bn{+}Ln)}$ (no tape) \\
+\bottomrule
+\end{tabular}
+\end{table*}
+
+\subsection{Summary of the derivations}
+
+\paragraph{Deployment / inference.}
+The trained decoder is ordinary min-sum: $\Theta(Ln)$ per frame by
+\eqref{eq:decode}. The learned per-edge, per-iteration weights add \emph{no}
+asymptotic cost, only $\Theta(Ln)$ storage. Decoding latency is therefore
+identical to a classical NMS receiver.
+
+\paragraph{Trapping-set search (offline, one-time).}
+Structural search seeds from $\Theta(n)$ variable nodes / short cycles and grows
+each seed for up to $a_{\max}$ steps; each step rescans the length-$M$ degree
+vector to score candidates ($\Theta(M)=\Theta(n)$), giving
+$\Theta(a_{\max}\,n^{2})$ overall. It runs once, off the decoding path, and is
+trivially parallel over seeds. Empirical (decoder-driven) search is just
+repeated inference, $\Theta(N_t^{\mathrm{s}}Ln)$.
+
+\paragraph{Importance-sampled floor estimation.}
+Each trial costs one decode $\Theta(BLn)$ plus the likelihood ratio
+$w=K/\sum_k e^{(\cdot)}$; the shift term is $\mathbf n^\top\mathbf 1_{T_k}$ over
+$A\in\{0,1\}^{K\times N}$, i.e.\ $\Theta(BnK)$ dense or $\Theta(BK\bar a)$
+exploiting the $\bar a$ nonzeros per set, followed by a $\Theta(BK)$
+log-sum-exp. Over $N_t$ trials this is $\Theta\!\big(N_t(Ln+K\bar a)\big)$, the
+decode dominating when $Ln\gg K\bar a$. IS replaces the $\Theta(1/\mathrm{FER})$
+frames a naive Monte-Carlo would need at the floor ($\sim\!10^{8}$) by a fixed
+$N_t$---orders-of-magnitude variance reduction at equal per-frame cost.
+
+\paragraph{Gradient training (NNMS, beat-NNMS, IS-NMS).}
+Back-propagation through the $L$-iteration unrolled decoder matches the forward
+order, $\Theta(BLn)$ per step, but must retain every intermediate message,
+incurring $\Theta(BLn)$ activation memory. Total $\Theta(SBLn)$.
+
+\paragraph{Adversarial training (Adv-NMS, proposed).}
+Adds one forward/backward for the FGSM input gradient
+$\nabla_{\boldsymbol\lambda}\mathcal L_0$ and one for the multi-iteration
+defense---a constant ($\approx\!2\times$) factor over a gradient step, hence the
+same $\Theta(SBLn)$ time and $\Theta(BLn)$ memory. Its gradients must pass
+through the \emph{differentiable surrogate} of the quantized decoder, which is
+biased in the saturated 5-bit regime---the reason RL/SAC are introduced.
+
+\paragraph{Policy-gradient improvement (RL-NMS, SAC-NMS).}
+Each step evaluates $2P$ perturbed policies, and \emph{every evaluation is a
+single inference decode of the exact hard 5-bit decoder}---there is no
+back-propagation through the decoder. Time is $\Theta(SPBLn)$; the
+score-function gradient itself is $\Theta(P d_\theta)=\Theta(PL)$ (negligible).
+Being inference-only, it \emph{eliminates} the $\Theta(BLn)$ autograd tape, so
+memory drops to the decode memory $\Theta(Bn+Ln)$. The policy has only
+$d_\theta=4L=60$ parameters, keeping the estimated gradient well-conditioned.
+SAC-NMS differs from RL-NMS solely in the constants
+$(P,\sigma_e,\alpha)=(12,0.08,0.10)$ vs.\ $(8,0.05,0.15)$---a $1.5\times$ larger
+population, hence $1.5\times$ the forward passes per step.
+
+\subsection{Takeaways}
+\begin{enumerate}
+\item \textbf{Linear-time deployment.} Every runtime path is $\Theta(Ln)$ per
+frame; the neural weights cost only $\Theta(Ln)$ memory. The proposed methods do
+not change decoding complexity.
+\item \textbf{ES vs.\ gradient is a time/memory trade.} RL/SAC spend a $\sim\!2P$
+($16$--$24\times$) factor in \emph{forward} passes but do zero
+back-propagation---no $\Theta(BLn)$ tape---and optimize the exact quantized
+decoder the gradient methods cannot differentiate.
+\item \textbf{Only offline search is super-linear.} The one-time structural TS
+search is $\Theta(a_{\max}n^{2})$ (and parallel); training and the IS pool are
+linear per frame. No component exceeds quadratic in $n$, and all
+decode/deployment costs are strictly linear.
+\end{enumerate}
